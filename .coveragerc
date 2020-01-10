@@ -1,0 +1,8 @@
+[run]
+branch = true
+
+[report]
+omit =
+    python/crr/etc/*
+    python/crr/utils/*
+    python/crr/tests/*
