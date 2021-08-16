@@ -14,6 +14,7 @@ from __future__ import unicode_literals
 
 import numpy as np
 import multiprocessing
+import fitsio
 
 
 class Reconstruct(object):
@@ -59,31 +60,65 @@ class Reconstruct(object):
        number of samples
 
     xgrid : (nx, ny) ndarray of np.float32
-       positions of grid
+       X positions of output grid
+
+    ygrid : (nx, ny) ndarray of np.float32
+       Y positions of output grid
 
     Methods:
     -------
 
+    set_grid(tlambda): set the reconstruction grid
+    set_Amatrix(): set the model matrix A
+    set_tlambda(tlambda): set Tikhonov parameter
+    set_svd(): run the SVD
+    set_weights(): set the weights
+    save_model(): save the model as a FITS file
     psf(x, y, i): model response at points (x, y) for sample i
 
     Notes:
     ------
 
     x, y are related to the grid points assuming the grid point
-    locations in x and y are at (0..(nx-1)) and (0..(ny-1).
+    locations in x and y are at (0..(nx-1)) and (0..(ny-1)).
 """
+    def __init__(self, filename=None, nx=None, ny=None, x=None, y=None,
+                 fivar=None):
+        self.save_attr = {'nx': np.int32,
+                          'ny': np.int32,
+                          'nsample': np.int32,
+                          'tlambda': np.float32}
+        if(filename is not None):
+            self.load_model(filename=filename)
+            return
 
-    def __init__(self, nx=None, ny=None, x=None, y=None, fivar=None):
         self.x = x
         self.y = y
         self.nsample = np.int32(len(x))
         self.nx = np.int32(nx)
         self.ny = np.int32(ny)
+        self._set_grid()
         if(fivar is None):
             self.fivar = np.ones(self.nsample, dtype=np.float32)
         else:
             self.fivar = np.float32(fivar)
-        self.tlambda = np.float32(1.e-5)
+        self.set_tlambda(np.float32(1.e-5))
+        self.did_svd = False
+        return
+    
+    def _set_grid(self):
+        """Create the reconstruction grid
+
+        Notes:
+        ------
+
+        Sets attributes xgrid, ygrid. Grid points have coordinates
+        0..(nx-1) and 0..(ny-1).
+"""
+        self.xgrid = np.arange(self.nx)
+        self.xgrid = np.outer(np.ones(self.ny), self.xgrid)
+        self.ygrid = np.arange(self.ny)
+        self.ygrid = np.outer(self.ygrid, np.ones(self.nx))
         return
 
     def set_tlambda(self, tlambda=None):
@@ -103,20 +138,7 @@ class Reconstruct(object):
         This parameter, if set sufficiently small, should have no
         discernible effects on the result.
 """
-
-    def set_grid(self):
-        """Create the reconstruction grid
-
-        Notes:
-        ------
-
-        Sets attributes xgrid, ygrid. Grid points have coordinates
-        0..(nx-1) and 0..(ny-1).
-"""
-        self.xgrid = np.arange(self.nx)
-        self.xgrid = np.outer(np.ones(self.ny), self.xgrid)
-        self.ygrid = np.arange(self.ny)
-        self.ygrid = np.outer(self.ygrid, np.ones(self.nx))
+        self.tlambda = tlambda
         return
 
     def set_Amatrix(self):
@@ -125,7 +147,11 @@ class Reconstruct(object):
         Notes:
         ------
 
-        Sets attribute A.
+        Sets attribute A, such that the predicted fluxes of the samples are
+           A . m
+        i.e. a grid point m_i will produce the response associated
+        with a delta function input.
+        
         Depends critically on the psf() method.
 """
         xg = self.xgrid.flatten()
@@ -137,35 +163,165 @@ class Reconstruct(object):
             self.A[:, i] = f
         return
 
-    def psf(self, x, y, i):
+    def psf(self, x=None, y=None, i=None):
+        """Returns point source response at x, y associated with sample i
+
+        Parameters:
+        ----------
+
+        x : np.float32 or ndarray of same
+            x values to evaluate
+
+        y : np.float32 or ndarray of same
+            y values to evaluate
+        
+        i : np.int32 or int
+            index of sample that is being evaluated
+"""
         g = np.exp(- 0.5 * (x**2 + y**2)) / (2. * np.pi)
         return(g)
 
-    def set_weights(self, F_weights=False):
-        Ntilde = np.diag(np.float32(self.fivar > 0))
-        Atilde = Ntilde.dot(self.A)  # since it is 0 or 1, this works
-        (U, S, VT) = np.linalg.svd(Atilde, full_matrices=False)
+    def set_svd(self):
+        """Perform SVD on the model matrix A
+        
+        Comments:
+        --------
 
-        iSstar = S / (S**2 + self.tlambda**2)
+        Sets a number of attributes:
+           Ntilde : diagonal input covariance, just 1s and 0s depending on ivar
+           V, S, UT : derived from SVD
+           Q : square root of covariance matrix
+           Qnorm : diagonal matrix with normalization factors
+           R : resolution matrix
+           did_svd : set to True
+"""
+        self.Ntilde = np.diag(np.float32(self.fivar > 0))
+        Atilde = self.Ntilde.dot(self.A)  # since it is 0 or 1, this works
+        (U, S, VT) = np.linalg.svd(Atilde, full_matrices=False)
 
         V = VT.transpose()
         Q = V.dot(np.diag(S)).dot(VT)
         self.Q = Q
         self.V = V
         self.VT = VT
-        Qnorm = np.diag(1. / Q.sum(axis=1))
-        self.R = Qnorm.dot(Q)
+        self.Qnorm = np.diag(1. / Q.sum(axis=1))
+        self.R = self.Qnorm.dot(Q)
+        self.UT = U.transpose()
+        self.S = S
 
-        UT = U.transpose()
-        self.weights = self.R.dot(V).dot(np.diag(iSstar)).dot(UT).dot(Ntilde)
+        self.did_svd = True
+
+        return
+
+    def set_weights(self, F_weights=False, G_weights=True):
+        """Set weights for reconstruction
+
+        Parameters:
+        ----------
+
+        F_weights : bool
+            if true, set the linear deconvolution weights F_weights
+
+        G_weights : bool
+            if true, set the covariance regularized weight weights
+
+        Comments:
+        --------
+
+        Performs SVD if it had not been previously performed.
+"""
+        if(not self.did_svd):
+            self.set_svd()
+
+        iSstar = self.S / (self.S**2 + self.tlambda**2)
+
+        if(G_weights):
+            self.weights = self.R.dot(self.V).dot(np.diag(iSstar)).dot(self.UT).dot(self.Ntilde)
 
         if(F_weights):
-            self.F_weights = V.dot(np.diag(iSstar)).dot(UT).dot(Ntilde)
+            self.F_weights = self.V.dot(np.diag(iSstar)).dot(self.UT).dot(self.Ntilde)
+        return
+
+    def save_model(self, filename=None, clobber=True):
+        """Saves the model matrix and SVD results
+
+        Parameters:
+        ----------
+
+        filename : str
+            name of output file
+
+        clobber : bool
+            whether to clobber (if True), or append to (if False) that file
+            (default True)
+
+        Comments:
+        --------
+
+        Recovered with load_model() method, or initializing with
+        filename argument.
+"""
+        hdr = dict()
+        for at in self.save_attr:
+            hdr[at.upper()] = getattr(self, at)
+        fitsio.write(filename, self.A, header=hdr, clobber=clobber)
+        fitsio.write(filename, self.x, clobber=False)
+        fitsio.write(filename, self.y, clobber=False)
+        fitsio.write(filename, self.fivar, clobber=False)
+        fitsio.write(filename, self.xgrid, clobber=False)
+        fitsio.write(filename, self.ygrid, clobber=False)
+        fitsio.write(filename, self.Ntilde, clobber=False)
+        fitsio.write(filename, self.V, clobber=False)
+        fitsio.write(filename, self.UT, clobber=False)
+        fitsio.write(filename, self.S, clobber=False)
+        fitsio.write(filename, self.Q, clobber=False)
+        fitsio.write(filename, self.Qnorm, clobber=False)
+        fitsio.write(filename, self.R, clobber=False)
+
+    def load_model(self, filename=None, ext_start=0):
+        """Load saved model matrix and SVD results
+
+        Parameters:
+        ----------
+
+        filename : str
+            name of output file
+
+        ext_start : int
+            first HDU of file to read from (default 0)
+
+        Comments:
+        --------
+
+        Loads the model problem.
+        Assumes file was created with save_model() method.
+"""
+        hdr = fitsio.read_header(filename, ext=0 + ext_start)
+        for at in self.save_attr:
+            setattr(self, at.lower(), np.cast[self.save_attr[at]](hdr[at]))
+        self.A = fitsio.read(filename, ext=0 + ext_start)
+        self.x = fitsio.read(filename, ext=1 + ext_start)
+        self.y = fitsio.read(filename, ext=2 + ext_start)
+        self.fivar = fitsio.read(filename, ext=3 + ext_start)
+        self.xgrid = fitsio.read(filename, ext=4 + ext_start)
+        self.ygrid = fitsio.read(filename, ext=5 + ext_start)
+        self.Ntilde = fitsio.read(filename, ext=6 + ext_start)
+        self.V = fitsio.read(filename, ext=7 + ext_start)
+        self.UT = fitsio.read(filename, ext=8 + ext_start)
+        self.S = fitsio.read(filename, ext=9 + ext_start)
+        self.Q = fitsio.read(filename, ext=10 + ext_start)
+        self.Qnorm = fitsio.read(filename, ext=11 + ext_start)
+        self.R = fitsio.read(filename, ext=12 + ext_start)
+        self.did_svd = True
         return
 
     def apply_weights(self, f=None):
         grid = self.weights.dot(f).reshape(self.nx, self.ny)
         return(grid)
+
+    def coverage(self):
+        coverage = self.A.sum(axis=1)
+        return(coverage)
 
 
 class ReconstructStitch(Reconstruct):
@@ -381,21 +537,33 @@ class ReconstructStitch(Reconstruct):
 
 
 class ReconstructWCS(Reconstruct):
-    def __init__(self, inwcs=None, outwcs=None, trim=None, pad=0):
+    def __init__(self, filename=None, inwcs=None, outwcs=None, trim=None, pad=0):
+        self.save_attr = {'nx': np.int32,
+                          'ny': np.int32,
+                          'nsample': np.int32,
+                          'inx': np.int32,
+                          'iny': np.int32,
+                          'tlambda': np.float32}
+
+        if(filename is not None):
+            self.load_model(filename=filename)
+            return
+
         owcs = outwcs
         self.nx = np.int32(owcs.pixel_shape[0]) + pad * 2
         self.ny = np.int32(owcs.pixel_shape[1]) + pad * 2
 
         iwcs = inwcs
-        iny = iwcs.pixel_shape[0]
-        inx = iwcs.pixel_shape[1]
-        iy = np.outer(np.arange(iny, dtype=np.float32),
-                      np.ones(inx, dtype=np.float32))
-        ix = np.outer(np.ones(iny, dtype=np.float32),
-                      np.arange(inx, dtype=np.float32))
-        if(trim is not None):
-            iy = iy[trim]
-            ix = ix[trim]
+        self.iny = iwcs.pixel_shape[0]
+        self.inx = iwcs.pixel_shape[1]
+        iy = np.outer(np.arange(self.iny, dtype=np.float32),
+                      np.ones(self.inx, dtype=np.float32))
+        ix = np.outer(np.ones(self.iny, dtype=np.float32),
+                      np.arange(self.inx, dtype=np.float32))
+        self.trim = trim
+        if(self.trim is not None):
+            iy = iy[self.trim]
+            ix = ix[self.trim]
 
         ra, dec = iwcs.all_pix2world(ix.flatten(), iy.flatten(), 0,
                                      ra_dec_order=True)
@@ -404,7 +572,39 @@ class ReconstructWCS(Reconstruct):
         self.x = self.x + pad
         self.y = self.y + pad
 
+        self._set_grid()
+
         self.nsample = np.int32(len(self.x))
         self.fivar = np.ones(self.nsample, dtype=np.float32)
-        self.tlambda = np.float32(1.e-5)
+        self.set_tlambda(np.float32(1.e-5))
+        self.did_svd = False
         return
+
+    def save_model(self, filename=None, clobber=True):
+        super().save_model(filename=filename, clobber=clobber)
+        fitsio.write(filename, np.int8(self.trim), clobber=False)
+        return
+
+    def load_model(self, filename=None, ext_start=0):
+        super().load_model(filename=filename)
+        self.trim = fitsio.read(filename, ext=ext_start + 13) > 0
+        return
+
+    def coverage(self):
+        """Return coverage of each input pixel
+
+        Returns:
+        -------
+    
+        coverage : 2D ndarray of np.float32
+            contribution of input pixel to all output pixels
+            (between 0 and 1)
+
+        Comments:
+        --------
+
+        Low coverage implies that the input pixel does not much
+        affect any output pixels.
+"""
+        coverage = self.A.sum(axis=1).reshape((self.inx, self.iny))
+        return(coverage)
