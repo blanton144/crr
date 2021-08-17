@@ -1,0 +1,18 @@
+#!/usr/bin/env python
+
+import os
+import matplotlib.pyplot as plt
+import matplotlib
+import crr.scattered.sampling as sampling
+
+matplotlib.rcParams['font.size'] = 16
+matplotlib.rcParams['figure.figsize'] = [9., 7.]
+dpi = 120
+
+samples = sampling.Sampling(nsamples=1000)
+samples.set_flux(total_flux=1000., noise=1.e-3)
+samples.imshow()
+plt.savefig(os.path.join(os.getenv('CRR_DIR'),
+                         'tex', 'figures', 'scattered-data.png'),
+            dpi=dpi)
+plt.close('all')

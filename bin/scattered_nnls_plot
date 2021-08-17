@@ -1,0 +1,120 @@
+#!/usr/bin/env python
+
+
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib
+import fitsio
+import crr.scattered.sampling as sampling
+import crr.scattered.gplusb as gplusb
+
+dpi = 120
+matplotlib.rcParams['font.size'] = 20
+matplotlib.rcParams['figure.figsize'] = [10.5, 8.4]
+
+samples = sampling.Sampling(nsamples=1000)
+
+noises = [1., 10., 100.]
+
+sigma = np.zeros(len(noises), dtype=np.float32)
+flux = np.zeros(len(noises), dtype=np.float32)
+background = np.zeros(len(noises), dtype=np.float32)
+
+Sexps = []
+rps = []
+vps = []
+vpbacks = []
+background_predicted = []
+backnoises = []
+
+for inoise, noise in enumerate(noises):
+    print("Noise level {n}".format(n=noise))
+
+    fdir = os.path.join(os.getenv('CRR_DIR'), 'data', 'scattered')
+    fname = 'nnls_mean_{n:d}.fits'.format(n=int(noise))
+
+    Sexp = fitsio.read(os.path.join(fdir, fname), ext=0)
+    Sarr = fitsio.read(os.path.join(fdir, fname), ext=1)
+
+    Sstd = Sarr.std(axis=0)
+    Sstd_median = np.median(Sstd)
+
+    samples.imshow(Sexp, nopoints=True)
+
+    pname = 'scattered-nnls-mean-{n:d}.png'.format(n=int(noise))
+    plt.savefig(os.path.join(os.getenv('CRR_DIR'),
+                             'tex', 'figures',
+                             pname), dpi=dpi)
+    plt.clf()
+
+    Sexp = Sexp
+    Sexps.append(Sexp)
+
+    #(tmp_sigma, tmp_flux, tmp_background, tmp_model) = gplusb.gplusb(samples, Sexp)
+    #sigma[inoise] = tmp_sigma
+    #flux[inoise] = tmp_flux
+    #background[inoise] = tmp_background
+
+    rr = np.sqrt(samples.xgrid**2 + samples.ygrid**2).reshape(samples.nx, samples.ny)
+    rp = np.unique(rr.flatten())
+    irkeep = np.where(rp < (samples.nx / 2 - 1))[0]
+    rp = rp[irkeep]
+    vp = np.zeros(len(rp), dtype=np.float32)
+    for ir, crp in enumerate(rp):
+        ii = np.where(rr == crp)
+        vp[ir] = Sexp[ii].mean()
+
+    #irmed = np.where(rp > sigma[inoise] * 3)[0]
+    irmed = np.where(rp > 3)[0]
+    vpback = np.median(vp[irmed])
+
+    sigma_mean = (((samples.sigmalo**(-3.) - samples.sigmahi**(-3.)) /
+                   (samples.sigmahi - samples.sigmalo)) / 3.)**(-0.25)
+    print(sigma_mean)
+    rho = np.float32(samples.nsamples) / np.float32(samples.nx * samples.ny)
+    neff = 4. * sigma_mean**2 * rho
+    tmp_background_predicted = noise / np.sqrt(2. * np.pi * neff)
+
+    rps.append(rp)
+    vps.append(vp)
+    vpbacks.append(vpback)
+    background_predicted.append(tmp_background_predicted)
+    backnoises.append(Sstd_median)
+
+colors = ['red', 'green', 'black']
+th = [1.5, 2.5, 3.5]
+noisenames = ['1', '10', '100']
+
+print(vpbacks)
+print(background_predicted)
+
+for inoise, noise in enumerate(noises):
+    plt.plot(rps[inoise], np.log10(vps[inoise]), color=colors[inoise],
+             linewidth=th[inoise])
+    rflat = np.array([0., 10.], dtype=np.float32)
+    vflat = np.zeros(2, dtype=np.float32) + vpbacks[inoise]
+    bflat = np.zeros(2, dtype=np.float32) + background_predicted[inoise]
+    nflat = np.zeros(2, dtype=np.float32) + backnoises[inoise]
+    #plt.plot(rflat, np.log10(bflat), linewidth=th[inoise],
+    #         color=colors[inoise], label='Noise = ' + noisenames[inoise])
+    plt.plot(rflat, np.log10(vflat), linewidth=th[inoise],
+             color=colors[inoise], linestyle='dotted',
+             label='Noise = ' + noisenames[inoise])
+    #plt.plot(rflat, np.log10(nflat), linewidth=1,
+             #color=colors[inoise])
+    plt.xlabel('r (pixels)')
+    plt.ylabel('log radial profile')
+    plt.legend()
+
+    #gsigma = 2.5
+    #rho = np.float32(samples.nsamples) / np.float32(samples.nx * samples.ny)
+    #bias = (noise / np.sqrt(2. * np.pi) / np.sqrt(rho) / np.sqrt(2.) /
+    #        gsigma / np.sqrt(2.))
+    #vflat = np.zeros(2, dtype=np.float32) + bias
+    #plt.plot(rflat, np.log10(vflat))
+
+pname = 'scattered-nnls-mean-profile.png'
+plt.savefig(os.path.join(os.getenv('CRR_DIR'),
+                         'tex', 'figures',
+                         pname), dpi=dpi)

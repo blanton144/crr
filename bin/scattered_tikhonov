@@ -1,0 +1,107 @@
+#!/usr/bin/env python
+
+import os
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import matplotlib
+import numpy as np
+import pygsvd
+import crr.scattered.sampling as sampling
+import crr.scattered.roll_zeropad as roll_zeropad
+
+dpi = 120
+matplotlib.rcParams['font.size'] = 30
+matplotlib.rcParams['figure.figsize'] = [10.5, 8.4]
+
+samples = sampling.Sampling(nsamples=1000)
+samples.set_flux(total_flux=1000., noise=1.e-0)
+
+# Construct Gamma for fancy Tikhonov
+nx = samples.nx
+ny = samples.ny
+Gamma = np.zeros((nx * ny, nx * ny))
+ident = np.diag(np.ones(nx * ny)).reshape(nx, ny, nx, ny)
+sident = - roll_zeropad.roll_zeropad(ident, -1, axis=2)
+Gamma = Gamma + sident.reshape(nx * ny, nx * ny)
+sident = - roll_zeropad.roll_zeropad(ident, 1, axis=2)
+Gamma = Gamma + sident.reshape(nx * ny, nx * ny)
+sident = - roll_zeropad.roll_zeropad(ident, -1, axis=3)
+Gamma = Gamma + sident.reshape(nx * ny, nx * ny)
+sident = - roll_zeropad.roll_zeropad(ident, 1, axis=3)
+Gamma = Gamma + sident.reshape(nx * ny, nx * ny)
+for indx in np.arange(nx * ny):
+    Gammasum = - Gamma[indx, :].sum()
+    Gamma[indx, :] = Gamma[indx, :] / Gammasum
+    Gamma[indx, indx] = 1.
+
+llambda = 1.e-2
+
+# Generalized SVD to deal with Tik and get the weights
+(sigma1_g, sigma2_g, X_g, U_g, V_g) = pygsvd.gsvd(samples.A, Gamma, extras='uv')
+XTinv_g = np.linalg.inv(X_g.T)
+sigmat_g = np.diag(1. / (sigma1_g * sigma1_g + llambda**2 * sigma2_g * sigma2_g))
+W_Tg = XTinv_g.dot(sigmat_g).dot(np.diag(sigma1_g)).dot(U_g.T)
+
+# Noiseless
+S_Tg = W_Tg.dot(samples.flux_nonoise)
+S_Tg = S_Tg.reshape((nx, ny))
+samples.imshow(S_Tg)
+plt.savefig(os.path.join(os.getenv('CRR_DIR'),
+                         'tex', 'figures',
+                         'scattered-regularized-T-noiseless.png'), dpi=dpi)
+plt.close('all')
+
+# Noiseless
+S_Tg = W_Tg.dot(samples.flux)
+S_Tg = S_Tg.reshape((nx, ny))
+samples.imshow(S_Tg)
+plt.savefig(os.path.join(os.getenv('CRR_DIR'),
+                         'tex', 'figures',
+                         'scattered-regularized-T-noisy.png'), dpi=dpi)
+plt.close('all')
+
+
+# Showing the covariance matrix
+C_Tg = W_Tg.dot(W_Tg.T)
+myargs = {'interpolation': 'nearest',
+          'origin': 'lower',
+          'cmap': cm.Greys,
+          'vmin': -1.,
+          'vmax': 1}
+CC_Tg = 0. * C_Tg
+for i in np.arange(samples.nx * samples.ny):
+    for j in np.arange(samples.nx * samples.ny):
+        CC_Tg[i, j] = C_Tg[i, j] / np.sqrt(C_Tg[i, i] * C_Tg[j, j])
+plt.imshow(CC_Tg, **myargs)
+nmid = (samples.nx * samples.ny) // 2
+plt.xlim([nmid - 30, nmid + 30])
+plt.ylim([nmid - 30, nmid + 30])
+plt.colorbar()
+plt.xlabel('pixel $i$')
+plt.ylabel('pixel $j$')
+plt.savefig(os.path.join(os.getenv('CRR_DIR'),
+                         'tex', 'figures',
+                         'scattered-regularized-T-covar.png'), dpi=dpi)
+plt.close('all')
+
+print("Typical off-diagonal values for correlation matrix:")
+for od in np.arange(6) + 1:
+    odvals = np.zeros(0, dtype=np.float32)
+    for i in np.arange(samples.nx * samples.ny):
+        for j in np.array([i - od, i + od]):
+            if((j > 0) & (j < samples.nx * samples.ny)):
+                odval = CC_Tg[i, j]
+                odvals = np.append(odvals, odval)
+    odtypical = np.median(np.abs(odvals))
+    print(" - for off-diagonal {od} : {odtypical}".format(od=od,
+                                                          odtypical=odtypical))
+nbig1 = np.zeros(samples.nx * samples.ny, dtype=np.float32)
+nbig2 = np.zeros(samples.nx * samples.ny, dtype=np.float32)
+for i in np.arange(samples.nx * samples.ny):
+    ibig = np.where(np.abs(CC_Tg[i, :]) > 0.15)[0]
+    nbig1[i] = len(ibig) - 1
+    ibig = np.where(np.abs(CC_Tg[i, :]) > 0.4)[0]
+    nbig2[i] = len(ibig) - 1
+
+print("Typically pixels have {n} neighbors with correlation > 0.15".format(n=np.median(nbig1)))
+print("Typically pixels have {n} neighbors with correlation > 0.4".format(n=np.median(nbig2)))

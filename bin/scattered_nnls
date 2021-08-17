@@ -1,0 +1,31 @@
+#!/usr/bin/env python
+
+import os
+import matplotlib.pyplot as plt
+import matplotlib
+import numpy as np
+import scipy.optimize as optimize
+import crr.scattered.sampling as sampling
+
+dpi = 120
+matplotlib.rcParams['font.size'] = 30
+matplotlib.rcParams['figure.figsize'] = [10.5, 8.4]
+
+samples = sampling.Sampling(nsamples=1000)
+samples.set_flux(total_flux=1000., noise=1.e-0)
+
+x = optimize.nnls(samples.A, samples.flux_nonoise)
+S_FF = x[0].reshape(samples.nx, samples.ny)
+samples.imshow(S_FF)
+plt.savefig(os.path.join(os.getenv('CRR_DIR'),
+                         'tex', 'figures',
+                         'scattered-nnls-noiseless.png'), dpi=dpi)
+plt.clf()
+
+x = optimize.nnls(samples.A, samples.flux)
+S_FF = x[0].reshape(samples.nx, samples.ny)
+samples.imshow(S_FF)
+plt.savefig(os.path.join(os.getenv('CRR_DIR'),
+                         'tex', 'figures',
+                         'scattered-nnls-noisy.png'), dpi=dpi)
+plt.clf()

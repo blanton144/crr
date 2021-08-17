@@ -1,0 +1,64 @@
+#!/usr/bin/env python
+
+import os
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import matplotlib
+import numpy as np
+import crr.scattered.sampling as sampling
+
+dpi = 120
+matplotlib.rcParams['font.size'] = 30
+matplotlib.rcParams['figure.figsize'] = [10.5, 8.4]
+
+samples = sampling.Sampling(nsamples=1000)
+samples.set_flux(total_flux=1000., noise=1.e-0)
+
+#  Use standard Tikhonov
+llambda = 3.e-3
+(U, S, VT) = np.linalg.svd(samples.A, full_matrices=False)
+Sinv = np.zeros(len(S))
+Sinv = S / (S**2 + llambda**2)
+W_Ts = VT.T.dot(np.diag(Sinv)).dot(U.T)
+
+# Without noise
+S_Ts = W_Ts.dot(samples.flux_nonoise)
+S_Ts = S_Ts.reshape((samples.nx, samples.ny))
+samples.imshow(S_Ts)
+plt.savefig(os.path.join(os.getenv('CRR_DIR'),
+                         'tex', 'figures',
+                         'scattered-regularized-simple-noiseless.png'), dpi=dpi)
+plt.close('all')
+
+# With noise
+S_Ts = W_Ts.dot(samples.flux)
+S_Ts = S_Ts.reshape((samples.nx, samples.ny))
+samples.imshow(S_Ts)
+plt.savefig(os.path.join(os.getenv('CRR_DIR'),
+                         'tex', 'figures',
+                         'scattered-regularized-simple-noisy.png'), dpi=dpi)
+plt.close('all')
+
+
+# Showing the covariance matrix
+C_Ts = W_Ts.dot(W_Ts.T)
+myargs = {'interpolation': 'nearest',
+          'origin': 'lower',
+           'cmap': cm.Greys,
+           'vmin': -1.,
+           'vmax': 1}
+CC_Ts = 0. * C_Ts
+for i in np.arange(samples.nx * samples.ny):
+    for j in np.arange(samples.nx * samples.ny):
+        CC_Ts[i, j] = C_Ts[i, j] / np.sqrt(C_Ts[i, i] * C_Ts[j, j])
+plt.imshow(CC_Ts, **myargs)
+nmid = (samples.nx * samples.ny) // 2
+plt.xlim([nmid - 30, nmid + 30])
+plt.ylim([nmid - 30, nmid + 30])
+plt.colorbar()
+plt.xlabel('pixel $i$')
+plt.ylabel('pixel $j$')
+plt.savefig(os.path.join(os.getenv('CRR_DIR'),
+                         'tex', 'figures',
+                         'scattered-regularized-simple-covar.png'), dpi=dpi)
+plt.close('all')

@@ -1,0 +1,51 @@
+#!/usr/bin/env python
+
+import os
+import matplotlib.pyplot as plt
+import matplotlib
+import numpy as np
+import scipy.optimize as optimize
+import crr.scattered.sampling as sampling
+import multiprocessing
+import fitsio
+
+dpi = 120
+matplotlib.rcParams['font.size'] = 30
+matplotlib.rcParams['figure.figsize'] = [10.5, 8.4]
+
+
+def S1(indx=None):
+    samples = sampling.Sampling(nsamples=1000, seed=10 + indx)
+    samples.set_flux(total_flux=total_flux, noise=noise, xcen=xcen, ycen=ycen)
+    x = optimize.nnls(samples.A, samples.flux)
+    Sarr_share[indx * samples.nx * samples.ny:
+               (indx + 1) * samples.nx * samples.ny] = x[0]
+    return
+
+
+samples = sampling.Sampling(nsamples=1000, seed=10)
+
+noises = [1., 10., 100.]
+
+for noise in noises:
+    print("Noise level {n}".format(n=noise))
+
+    ntot = 24000
+    total_flux = 1000.
+    xcen = 0.
+    ycen = 0.
+
+    Sarr_share = multiprocessing.Array('f', ntot * samples.nx * samples.ny)
+
+    with multiprocessing.Pool() as pool:
+        pool.map(S1, np.arange(ntot, dtype=np.int32))
+
+    Sarr = np.array(Sarr_share).reshape(ntot, samples.nx, samples.ny)
+
+    Sexp = Sarr.mean(axis=0)
+
+    fdir = os.path.join(os.getenv('CRR_DIR'), 'data', 'scattered')
+    fname = 'nnls_mean_{n:d}.fits'.format(n=int(noise))
+    print(fname)
+    fitsio.write(os.path.join(fdir, fname), Sexp, clobber=True)
+    fitsio.write(os.path.join(fdir, fname), Sarr, clobber=False)

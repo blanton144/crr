@@ -1,0 +1,58 @@
+#!/usr/bin/env python
+
+import os
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import matplotlib
+import numpy as np
+import crr.scattered.sampling as sampling
+
+dpi = 120
+matplotlib.rcParams['font.size'] = 30
+matplotlib.rcParams['figure.figsize'] = [10.5, 8.4]
+
+samples = sampling.Sampling(nsamples=10000, sigmarange=[1.0, 1.0])
+
+# Fit linear model, no noise, minimal regularization
+llambda = 1.e-4
+(U, S, VT) = np.linalg.svd(samples.A, full_matrices=False)
+Sinv = S / (S**2 + llambda**2)
+
+Q = VT.transpose().dot(np.diag(S)).dot(VT)
+Qs = np.diag(1. / (Q.sum(axis=1)))
+W_G = Qs.dot(VT.transpose()).dot(U.transpose())
+
+S_G_all = np.zeros((1000, samples.nx, samples.ny), dtype=np.float32)
+for i in np.arange(1000):
+    samples.set_flux(total_flux=1000., noise=1.)
+    S_G = W_G.dot(samples.flux)
+    S_G_all[i, :, :] = S_G.reshape((samples.nx, samples.ny))
+
+S_G_std = S_G_all.std(axis=0)
+S_G_mean = S_G_all.mean(axis=0)
+print(S_G_mean.sum())
+print(np.median(S_G_std))
+plt.imshow(S_G_std)
+plt.colorbar()
+plt.show()
+plt.imshow(S_G_mean)
+plt.colorbar()
+plt.show()
+
+print(samples.x.min())
+print(samples.y.min())
+print(samples.x.max())
+print(samples.y.max())
+
+# Calculate the covariance matrix
+C_G = W_G.dot(W_G.T)
+C_G_diag = np.zeros(C_G.shape[0], dtype=np.float32)
+for i in np.arange(C_G.shape[0], dtype=np.int32):
+    C_G_diag[i] = C_G[i, i]
+print(np.sqrt(np.median(C_G_diag)))
+
+sigma_mean = 3.2
+rho = np.float32(samples.nsamples) / np.float32(samples.nx * samples.ny)
+neff = 4. * sigma_mean**2 * rho
+noise = 1. / np.sqrt(rho)
+print(noise)
