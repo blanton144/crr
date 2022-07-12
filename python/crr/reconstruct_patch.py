@@ -13,7 +13,7 @@ from __future__ import absolute_import
 from __future__ import unicode_literals
 
 import numpy as np
-import scipy.linalg
+import multiprocessing
 import fitsio
 
 
@@ -115,10 +115,10 @@ class Reconstruct(object):
         Sets attributes xgrid, ygrid. Grid points have coordinates
         0..(nx-1) and 0..(ny-1).
 """
-        self.xgrid = np.arange(self.nx, dtype=np.float32)
-        self.xgrid = np.outer(np.ones(self.ny, dtype=np.float32), self.xgrid)
-        self.ygrid = np.arange(self.ny, dtype=np.float32)
-        self.ygrid = np.outer(self.ygrid, np.ones(self.nx, dtype=np.float32))
+        self.xgrid = np.arange(self.nx)
+        self.xgrid = np.outer(np.ones(self.ny), self.xgrid)
+        self.ygrid = np.arange(self.ny)
+        self.ygrid = np.outer(self.ygrid, np.ones(self.nx))
         return
 
     def set_tlambda(self, tlambda=None):
@@ -158,7 +158,7 @@ class Reconstruct(object):
         yg = self.ygrid.flatten()
         M = len(xg)
         self.A = np.zeros((len(self.fivar), M), dtype=np.float32)
-        for i in np.arange(M, dtype=int):
+        for i in np.arange(M):
             f = self.psf(self.x - xg[i], self.y - yg[i], i)
             self.A[:, i] = f
         return
@@ -181,14 +181,8 @@ class Reconstruct(object):
         g = np.exp(- 0.5 * (x**2 + y**2)) / (2. * np.pi)
         return(g)
 
-    def set_svd(self, delete=True):
+    def set_svd(self):
         """Perform SVD on the model matrix A
-
-        Parameters
-        ----------
-
-        delete : bool
-            delete the A matrix along the way to conserve memory
         
         Comments:
         --------
@@ -203,40 +197,23 @@ class Reconstruct(object):
 """
         self.Ntilde = np.diag(np.float32(self.fivar > 0))
         Atilde = self.Ntilde.dot(self.A)  # since it is 0 or 1, this works
-        print(Atilde.dtype)
-        print(Atilde.nbytes)
-        print(Atilde.shape, flush=True)
-        if(delete):
-            self.A = None
-        print(type(Atilde))
-        (U, S, VT, info) = scipy.linalg.lapack.sgesvd(Atilde, full_matrices=False)
+        (U, S, VT) = np.linalg.svd(Atilde, full_matrices=False)
 
-        Atilde = 0
-
-        self.S = S
-
-        # Calculate normalization of Q's rows without
-        # actually instantiating Q
-        Qnorminv = np.einsum('ik,k,jk->i', VT.T, self.S,
-                             VT.T, optimize='greedy')
-        self.Qnorm = 1. / Qnorminv
-
-        # Instead of calculating R, recognize that it will
-        # always be multiplied by V, and R.V is a smaller
-        # matrix to store, and easier to calculate. 
-        #   R = Qn.Q = Qn.V.S.VT
-        #   R.V = Qn.V.S.VT.V = Qn.V.S
-        VS = VT.T.dot(np.diag(self.S))
-        self.RV = np.einsum('i,ij->ij', self.Qnorm, VS,
-                            optimize='greedy')
-        
+        V = VT.transpose()
+        Q = V.dot(np.diag(S)).dot(VT)
+        self.Q = Q
+        self.V = V
+        self.VT = VT
+        self.Qnorm = np.diag(1. / Q.sum(axis=1))
+        self.R = self.Qnorm.dot(Q)
         self.UT = U.transpose()
+        self.S = S
 
         self.did_svd = True
 
         return
 
-    def set_weights(self, F_weights=False, G_weights=True, delete=True):
+    def set_weights(self, F_weights=False, G_weights=True):
         """Set weights for reconstruction
 
         Parameters:
@@ -248,9 +225,6 @@ class Reconstruct(object):
         G_weights : bool
             if true, set the covariance regularized weight weights
 
-        delete : bool
-            delete the V or RV array and A matrix to conserve memory
-
         Comments:
         --------
 
@@ -259,19 +233,13 @@ class Reconstruct(object):
         if(not self.did_svd):
             self.set_svd()
 
-        iSstar = np.float32(self.S / (self.S**2 + self.tlambda**2))
+        iSstar = self.S / (self.S**2 + self.tlambda**2)
 
         if(G_weights):
-            self.weights = self.RV.dot(np.diag(iSstar)).dot(self.UT).dot(self.Ntilde)
-            if(delete):
-                self.RV = None
-                self.A = None
+            self.weights = self.R.dot(self.V).dot(np.diag(iSstar)).dot(self.UT).dot(self.Ntilde)
 
         if(F_weights):
             self.F_weights = self.V.dot(np.diag(iSstar)).dot(self.UT).dot(self.Ntilde)
-            if(delete):
-                self.V = None
-                self.A = None
         return
 
     def save_model(self, filename=None, clobber=True):
@@ -321,7 +289,7 @@ class Reconstruct(object):
                          clobber=False)
             fitsio.write(filename, self.Qnorm, extname='QNORM',
                          clobber=False)
-            fitsio.write(filename, self.RV, extname='RV',
+            fitsio.write(filename, self.R, extname='R',
                          clobber=False)
         except:
             pass
@@ -359,7 +327,7 @@ class Reconstruct(object):
         self.S = fitsio.read(filename, ext=9 + ext_start)
         self.Q = fitsio.read(filename, ext=10 + ext_start)
         self.Qnorm = fitsio.read(filename, ext=11 + ext_start)
-        self.RV = fitsio.read(filename, ext=12 + ext_start)
+        self.R = fitsio.read(filename, ext=12 + ext_start)
         self.did_svd = True
         return
 
@@ -370,6 +338,218 @@ class Reconstruct(object):
     def coverage(self):
         coverage = self.A.sum(axis=1)
         return(coverage)
+
+
+class ReconstructStitch(Reconstruct):
+    """Reconstruction of 2D grid from samples, using stitching
+
+    Parameters:
+    ----------
+
+    nx : int, np.int32
+       number of columns in grid
+
+    ny : int, np.int32
+       number of rows in grid
+
+    x : ndarray of np.float32
+       x positions of samples
+
+    y : ndarray of np.float32
+       y positions of samples
+
+    fivar : ndarray of np.float32
+       inverse variance of values at samples
+
+    dstitch : np.int32
+       maximum size of each stitching
+
+    Attributes:
+    ----------
+
+    nx : np.int32
+       number of columns in grid
+
+    ny : np.int32
+       number of rows in grid
+
+    x : ndarray of np.float32
+       x positions of samples
+
+    y : ndarray of np.float32
+       y positions of samples
+
+    fivar : ndarray of np.float32
+       inverse variance of values at samples (default all ones)
+
+    nsample : np.int32
+       number of samples
+
+    xgrid : (nx, ny) ndarray of np.float32
+       positions of grid
+
+    dstitch : np.int32
+       minimum size of each stitching
+
+    Methods:
+    -------
+
+    psf(x, y, i): model response at points (x, y) for sample i
+
+    Notes:
+    ------
+
+    Performs a suite of SVDs, of minimum size dstitch and maximum size
+    2*dstitch, arranged to cover the entire desired output
+    grid. Weights are averaged.
+
+    dstitch should be large enough to enclose most of the the power of 
+    the largest PSF.
+
+    x, y are related to the grid points assuming the grid point
+    locations in x and y are at (0..(nx-1)) and (0..(ny-1).
+
+    """
+
+    def set_patches(self, pminsize=30, poverlap=14):
+        """Determine patch positions
+"""
+        self.poverlap = poverlap
+
+        self.npx = self.nx // (pminsize - self.poverlap) + 1
+        self.pxsize = self.poverlap + self.nx // (self.npx - 1)
+
+        pxcen = np.int32(np.floor(self.nx / self.npx *
+                                  (np.arange(self.npx) + 0.5)))
+        print(pxcen)
+        pxst = pxcen - (self.pxsize // 2)
+        pxnd = pxst + self.pxsize - 1
+        pxst[0] = 0
+        pxnd[0] = pxst[0] + (self.pxsize - 1)
+        pxnd[-1] = self.nx - 1
+        pxst[-1] = pxnd[-1] - (self.pxsize - 1)
+
+        self.npy = self.ny // (pminsize - self.poverlap) + 1
+        self.pysize = self.poverlap + self.ny // (self.npy - 1)
+
+        pycen = np.int32(np.floor(self.ny / self.npy *
+                                  (np.arange(self.npy) + 0.5)))
+        pyst = pycen - (self.pysize // 2)
+        pynd = pyst + self.pysize - 1
+        pyst[0] = 0
+        pynd[0] = pyst[0] + (self.pysize - 1)
+        pynd[-1] = self.ny - 1
+        pyst[-1] = pynd[-1] - (self.pysize - 1)
+
+        self.np = self.npx * self.npy
+        patch_dtype = np.dtype([('pxst', np.int32),
+                                ('pxnd', np.int32),
+                                ('pyst', np.int32),
+                                ('pynd', np.int32)])
+        self.patches = np.zeros((self.npx, self.npy), dtype=patch_dtype)
+        for i in np.arange(self.npx, dtype=np.int32):
+            for j in np.arange(self.npy, dtype=np.int32):
+                self.patches['pxst'][i, j] = pxst[i]
+                self.patches['pxnd'][i, j] = pxnd[i]
+                self.patches['pyst'][i, j] = pyst[j]
+                self.patches['pynd'][i, j] = pynd[j]
+
+        return
+
+    def f_in_patch(self, i, j):
+        fin = np.where((self.x >
+                        self.patches['pxst'][i, j] - self.poverlap) &
+                       (self.x <
+                        self.patches['pxnd'][i, j] + self.poverlap) &
+                       (self.y >
+                        self.patches['pyst'][i, j] - self.poverlap) &
+                       (self.y <
+                        self.patches['pynd'][i, j] + self.poverlap))[0]
+        return(fin)
+
+    def grid_in_patch(self, i, j):
+        gin = np.where((self.xgrid.flatten() >= self.patches['pxst'][i, j]) &
+                       (self.xgrid.flatten() <= self.patches['pxnd'][i, j]) &
+                       (self.ygrid.flatten() >= self.patches['pyst'][i, j]) &
+                       (self.ygrid.flatten() <= self.patches['pynd'][i, j]))[0]
+        return(gin)
+
+    def calc_weights_patch(self, tij):
+        i = tij[0]
+        j = tij[1]
+        print("{i} {j}".format(i=i, j=j))
+        fin = self.f_in_patch(i, j)
+        gin = self.grid_in_patch(i, j)
+
+        ix = np.ix_(fin, gin)
+        Atrim = self.A[ix]
+
+        Ntilde = np.diag(np.float32(self.fivar[fin] > 0))
+        Atilde = Ntilde.dot(Atrim)  # since it is 0 or 1, this works
+
+        (U, S, VT) = np.linalg.svd(Atilde, full_matrices=False)
+
+        iSstar = S / (S**2 + self.tlambda**2)
+
+        V = VT.transpose()
+        Q = V.dot(np.diag(S)).dot(VT)
+        Qnorm = np.diag(1. / Q.sum(axis=1))
+        R = Qnorm.dot(Q)
+
+        UT = U.transpose()
+
+        pweights = R.dot(V).dot(np.diag(iSstar)).dot(UT).dot(Ntilde)
+        return(i, j, pweights)
+
+    def set_weights(self):
+        patches = []
+        for i in np.arange(self.npx):
+            for j in np.arange(self.npy):
+                patches.append((i, j))
+        self.weights_patch = [[np.zeros(0)
+                               for j in range(self.npy)]
+                              for i in range(self.npx)]
+        with multiprocessing.Pool() as p:
+            for i, j, w in p.imap_unordered(self.calc_weights_patch, patches):
+                self.weights_patch[i][j] = w
+
+        self.weights_weight = np.zeros((self.nx * self.ny,
+                                        self.nsample), dtype=np.float32)
+        weights_sum = np.zeros((self.nx * self.ny,
+                                self.nsample), dtype=np.float32)
+        for i in np.arange(self.npx):
+            for j in np.arange(self.npy):
+                fin = self.f_in_patch(i, j)
+                gin = self.grid_in_patch(i, j)
+
+                ix = np.ix_(gin, fin)
+
+                xfac = ((self.xgrid.flatten()[gin] -
+                         self.patches['pxst'][i, j]) /
+                        (self.patches['pxnd'][i, j] -
+                         self.patches['pxst'][i, j]))
+                weights_xapodize = np.exp(- 0.5 * (xfac - 0.5)**2 /
+                                          (0.15**2))
+                yfac = ((self.ygrid.flatten()[gin] -
+                         self.patches['pyst'][i, j]) /
+                        (self.patches['pynd'][i, j] -
+                         self.patches['pyst'][i, j]))
+                weights_yapodize = np.exp(- 0.5 * (yfac - 0.5)**2 /
+                                          (0.15**2))
+                weights_apodize = weights_xapodize * weights_yapodize
+                weights_apodize_x = np.outer(weights_apodize,
+                                             np.ones(len(fin)))
+                self.weights_weight[ix] = (self.weights_weight[ix] +
+                                           weights_apodize_x)
+                weights_sum[ix] = (weights_sum[ix] +
+                                   self.weights_patch[i][j] *
+                                   weights_apodize_x)
+
+        ii = np.where(self.weights_weight > 0)
+        self.weights = np.zeros((self.nx * self.ny,
+                                 self.nsample), dtype=np.float32)
+        self.weights[ii] = weights_sum[ii] / self.weights_weight[ii]
+        return
 
 
 class ReconstructWCS(Reconstruct):
