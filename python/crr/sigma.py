@@ -20,7 +20,7 @@ def sigma(image, sp=10):
     Notes
     -----
     Calls sigma.c through pybind
-    """
+"""
 
     image = np.array(image)
     nx = image.shape[0]

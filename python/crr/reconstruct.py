@@ -20,7 +20,7 @@ import fitsio
 class Reconstruct(object):
     """Reconstruction of 2D grid from samples
 
-    Parameters:
+    Parameters
     ----------
 
     nx : int, np.int32
@@ -38,7 +38,7 @@ class Reconstruct(object):
     fivar : ndarray of np.float32
        inverse variance of values at samples
 
-    Attributes:
+    Attributes
     ----------
 
     nx : np.int32
@@ -65,19 +65,8 @@ class Reconstruct(object):
     ygrid : (nx, ny) ndarray of np.float32
        Y positions of output grid
 
-    Methods:
-    -------
-
-    set_grid(tlambda): set the reconstruction grid
-    set_Amatrix(): set the model matrix A
-    set_tlambda(tlambda): set Tikhonov parameter
-    set_svd(): run the SVD
-    set_weights(): set the weights
-    save_model(): save the model as a FITS file
-    psf(x, y, i): model response at points (x, y) for sample i
-
-    Notes:
-    ------
+    Notes
+    -----
 
     x, y are related to the grid points assuming the grid point
     locations in x and y are at (0..(nx-1)) and (0..(ny-1)).
@@ -109,8 +98,8 @@ class Reconstruct(object):
     def _set_grid(self):
         """Create the reconstruction grid
 
-        Notes:
-        ------
+        Notes
+        -----
 
         Sets attributes xgrid, ygrid. Grid points have coordinates
         0..(nx-1) and 0..(ny-1).
@@ -124,14 +113,14 @@ class Reconstruct(object):
     def set_tlambda(self, tlambda=None):
         """Set Tikhonov parameter
 
-        Parameters:
+        Parameters
         ----------
 
         tlambda : np.float32
             Tikhonov parameter in SVD pseudo-inversion
 
-        Notes:
-        ------
+        Notes
+        -----
 
         Sets attribute tlambda.
 
@@ -144,8 +133,8 @@ class Reconstruct(object):
     def set_Amatrix(self):
         """Create the problem matrix
 
-        Notes:
-        ------
+        Notes
+        -----
 
         Sets attribute A, such that the predicted fluxes of the samples are
            A . m
@@ -166,7 +155,7 @@ class Reconstruct(object):
     def psf(self, x=None, y=None, i=None):
         """Returns point source response at x, y associated with sample i
 
-        Parameters:
+        Parameters
         ----------
 
         x : np.float32 or ndarray of same
@@ -190,7 +179,7 @@ class Reconstruct(object):
         delete : bool
             delete the A matrix along the way to conserve memory
         
-        Comments:
+        Comments
         --------
 
         Sets a number of attributes:
@@ -203,12 +192,8 @@ class Reconstruct(object):
 """
         self.Ntilde = np.diag(np.float32(self.fivar > 0))
         Atilde = self.Ntilde.dot(self.A)  # since it is 0 or 1, this works
-        print(Atilde.dtype)
-        print(Atilde.nbytes)
-        print(Atilde.shape, flush=True)
         if(delete):
             self.A = None
-        print(type(Atilde))
         (U, S, VT, info) = scipy.linalg.lapack.sgesvd(Atilde, full_matrices=False)
 
         Atilde = 0
@@ -239,7 +224,7 @@ class Reconstruct(object):
     def set_weights(self, F_weights=False, G_weights=True, delete=True):
         """Set weights for reconstruction
 
-        Parameters:
+        Parameters
         ----------
 
         F_weights : bool
@@ -251,7 +236,7 @@ class Reconstruct(object):
         delete : bool
             delete the V or RV array and A matrix to conserve memory
 
-        Comments:
+        Comments
         --------
 
         Performs SVD if it had not been previously performed.
@@ -277,7 +262,7 @@ class Reconstruct(object):
     def save_model(self, filename=None, clobber=True):
         """Saves the model matrix and SVD results
 
-        Parameters:
+        Parameters
         ----------
 
         filename : str
@@ -287,7 +272,7 @@ class Reconstruct(object):
             whether to clobber (if True), or append to (if False) that file
             (default True)
 
-        Comments:
+        Comments
         --------
 
         Recovered with load_model() method, or initializing with
@@ -329,7 +314,7 @@ class Reconstruct(object):
     def load_model(self, filename=None, ext_start=0):
         """Load saved model matrix and SVD results
 
-        Parameters:
+        Parameters
         ----------
 
         filename : str
@@ -338,7 +323,7 @@ class Reconstruct(object):
         ext_start : int
             first HDU of file to read from (default 0)
 
-        Comments:
+        Comments
         --------
 
         Loads the model problem.
@@ -439,15 +424,15 @@ class ReconstructWCS(Reconstruct):
     def coverage(self):
         """Return coverage of each input pixel
 
-        Returns:
+        Returns
         -------
     
         coverage : 2D ndarray of np.float32
             contribution of input pixel to all output pixels
             (between 0 and 1)
 
-        Comments:
-        --------
+        Notes
+        -----
 
         Low coverage implies that the input pixel does not much
         affect any output pixels.
